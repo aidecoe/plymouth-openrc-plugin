@@ -16,125 +16,185 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+#include <assert.h>
 #include <einfo.h>
 #include <rc.h>
+#include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 
 #ifdef DEBUG
-#    define DBGSTR(x) fprintf(dbg, "  " #x "=\"%s\"", x)
+#    define DBG(x) einfo("[plymouth-plugin] " x)
 #else
-#    define DBGSTR(x)
+#    define DBG(x)
 #endif
 
+#define BUFFER_SIZE 300
 
-int ply_update(const char* hook, const char* name)
+
+enum {
+    PLY_MODE_BOOT,
+    PLY_MODE_SHUTDOWN
+};
+
+
+int command(const char* cmd)
 {
-    char buffer[100];
-    sprintf(buffer, "plymouth update --status=%s-%s", hook, name);
-    if(system(buffer) != 0) {
-        ewarn("Failed on sending status update to Plymouth daemon!");
-        return 1;
+    int rv = system(cmd);
+
+#if DEBUG
+    if(rv != 0) {
+        ewarn("[plymouth-plugin] command(\"%s\"): rv=%d", cmd, rv);
     }
-    return 0;
+#endif
+
+    return rv;
 }
 
 
-int ply_text(const char* hook, const char* name)
+int commandf(const char* cmd, ...)
 {
-    char buffer[100];
-    sprintf(buffer, "plymouth message --text=\"%s %s\"", hook, name);
-    if(system(buffer) != 0) {
-        ewarn("Failed on sending message to Plymouth daemon!");
-        return 1;
+    static char buffer[BUFFER_SIZE];
+    va_list ap;
+    int rv;
+
+    va_start(ap, cmd);
+    rv = vsnprintf(buffer, BUFFER_SIZE, cmd, ap);
+    va_end(ap);
+    if(rv >= BUFFER_SIZE) {
+        eerror("[plymouth-plugin] command(\"%s\"): buffer overflow", buffer);
+        return -1;
     }
-    return 0;
+
+    return command(buffer);
 }
 
 
-int ply_start()
+bool ply_message(const char* hook, const char* name)
 {
-    if(system("plymouth --ping") != 0) {
-        if(system("plymouthd") != 0) {
-            eerror("Starting Plymouth daemon failed!");
-            return 1;
-        }
-    }
-
-    if(system("plymouth --sysinit") != 0) {
-        eerror("plymouth --sysinit failed!");
-        return 1;
-    }
-
-    if(system("plymouth --show-splash") != 0) {
-        eerror("Couldn't show Plymouth splash!");
-        return 1;
-    }
-
-    return 0;
+    return (commandf("/bin/plymouth message --text=\"%s %s\"", hook, name) == 0);
 }
 
 
-int ply_stop()
+bool ply_ping()
 {
-    if(system("plymouth --quit") != 0) {
-        eerror("Error when quiting Plymouth daemon.");
-        return 1;
+    return (system("/bin/plymouth --ping") == 0);
+}
+
+
+bool ply_quit(int mode)
+{
+    int rv = 0;
+
+    if(mode == PLY_MODE_BOOT)
+        rv = command("/bin/plymouth quit");
+    else if(mode == PLY_MODE_SHUTDOWN)
+        rv = command("/bin/plymouth quit --retain-splash");
+    else
+        assert(0 && "Unknown mode");
+
+    return (rv == 0);
+}
+
+
+bool ply_start(int mode)
+{
+    int rv = 0;
+
+    if(!ply_ping()) {
+        ebegin("Starting plymouthd ...");
+#define PLYD "/sbin/plymouthd --attach-to-session --pid-file=/run/plymouth/pid --mode="
+        if(mode == PLY_MODE_BOOT)
+            rv = command(PLYD "boot");
+        else if(mode == PLY_MODE_SHUTDOWN)
+            rv = command(PLYD "shutdown");
+        else
+            assert(0 && "Unknown mode");
+#undef PLYD
+        eend(rv, "plymouthd?");
+
+        if((rv == 0) && command("/bin/plymouth --show-splash") != 0)
+            return false;
     }
-    return 0;
+
+    return true;
+}
+
+
+bool ply_update_status(int hook, const char* name)
+{
+    return (commandf("/bin/plymouth update --status=%d-%s", hook, name) == 0);
+}
+
+
+bool ply_update_rootfs_rw()
+{
+    const int RWDIR = R_OK | W_OK | X_OK;
+
+    if(access("/var/lib/plymouth", RWDIR) != 0
+            || access("/var/log", RWDIR) != 0) {
+        eerror("[plymouth-plugin] /var/lib/plymouth and /var/log need to be "
+                "writable at this stage, but are not!");
+        return false;
+    }
+
+    return (command("/bin/plymouth update-root-fs --read-write") == 0);
 }
 
 
 int rc_plugin_hook(RC_HOOK hook, const char *name)
 {
-    int retval = 0;
+    int rv = 0;
     char* runlevel = rc_runlevel_get();
     const char* bootlevel = getenv("RC_BOOTLEVEL");
     const char* defaultlevel = getenv("RC_DEFAULTLEVEL");
 
-#ifdef DEBUG
-    FILE* dbg;
-
-    if(strcmp(runlevel, RC_LEVEL_SHUTDOWN) == 0)
-        dbg = fopen("/plymouth.log", "a");
-    else
-        dbg = fopen("/dev/.initramfs/plymouth.log", "a");
-
-    fprintf(dbg, "hook=%d", hook);
-#endif
+    einfo("hook=%d name=%s runlvl=%s plyd=%d", hook, name, runlevel,
+            ply_ping());
 
     /* Don't do anything if we're not booting or shutting down. */
     if(!(rc_runlevel_starting() || rc_runlevel_stopping())) {
-        if(!(hook == RC_HOOK_RUNLEVEL_STOP_IN ||
-                    hook == RC_HOOK_RUNLEVEL_STOP_OUT ||
-                    hook == RC_HOOK_RUNLEVEL_START_IN ||
-                    hook == RC_HOOK_RUNLEVEL_START_OUT))
-            goto exit;
+        switch(hook) {
+            case RC_HOOK_RUNLEVEL_STOP_IN:
+            case RC_HOOK_RUNLEVEL_STOP_OUT:
+            case RC_HOOK_RUNLEVEL_START_IN:
+            case RC_HOOK_RUNLEVEL_START_OUT:
+                /* Switching runlevels, so we're booting or shutting down.*/
+                break;
+            default:
+                DBG("Not booting or shutting down");
+                goto exit;
+        }
     }
 
-    /* It's assumed in ply_* functions that 'name' is not longer than 50 chars.
-     */
-    if(strlen(name) > 50)
-        goto exit;
+    DBG("switch1");
 
-    DBGSTR(name);
-    DBGSTR(runlevel);
+    switch(hook) {
+        case RC_HOOK_RUNLEVEL_START_IN:
+        case RC_HOOK_RUNLEVEL_STOP_IN:
+        case RC_HOOK_SERVICE_START_IN:
+        case RC_HOOK_SERVICE_STOP_IN:
+            ply_update_status(hook, name);
+            break;
+        default:
+            break;
+    }
+
+    DBG("switch2");
 
     switch(hook) {
     case RC_HOOK_RUNLEVEL_STOP_IN:
-        retval |= ply_update("RUNLEVEL_STOP_IN", name);
-
         /* Start the Plymouth daemon and show splash when system is being shut
          * down. */
         if(strcmp(name, RC_LEVEL_SHUTDOWN) == 0) {
-            ply_start();
+            DBG("ply_start(PLY_MODE_SHUTDOWN)");
+            if(!ply_start(PLY_MODE_SHUTDOWN)
+                    || !ply_update_rootfs_rw())
+                rv = 1;
         }
-        break;
-
-    case RC_HOOK_RUNLEVEL_STOP_OUT:
-        retval |= ply_update("RUNLEVEL_STOP_OUT", name);
         break;
 
     case RC_HOOK_RUNLEVEL_START_IN:
@@ -142,53 +202,57 @@ int rc_plugin_hook(RC_HOOK hook, const char *name)
          * runlevel. Required /proc and /sys should already be mounted in
          * sysinit runlevel. */
         if(strcmp(name, bootlevel) == 0) {
-            if((retval |= ply_start()) != 0)
-                goto exit;
+            DBG("ply_start(PLY_MODE_BOOT)");
+            if(!ply_start(PLY_MODE_BOOT))
+                rv = 1;
         }
-
-        retval |= ply_update("RUNLEVEL_START_IN", name);
         break;
 
     case RC_HOOK_RUNLEVEL_START_OUT:
-        retval |= ply_update("RUNLEVEL_START_OUT", name);
-
         /* Stop the Plymouth daemon right after default runlevel is started. */
         if(strcmp(name, defaultlevel) == 0) {
-            retval |= ply_stop();
+            DBG("ply_quit(PLY_MODE_BOOT)");
+            if(!ply_quit(PLY_MODE_BOOT))
+                rv = 1;
         }
         break;
 
-    case RC_HOOK_SERVICE_START_NOW:
-        retval |= ply_text("Starting service", name);
-        break;
-
-    case RC_HOOK_SERVICE_START_OUT:
-        break;
-
-    case RC_HOOK_SERVICE_START_DONE:
-        retval |= ply_update("SERVICE_START_DONE", name);
+    case RC_HOOK_SERVICE_STOP_IN:
+        /* Quit Plymouth when we're going to lost write access to /var/... */
+        if(strcmp(name, "localmount") == 0 &&
+                strcmp(runlevel, RC_LEVEL_SHUTDOWN) == 0) {
+            DBG("ply_quit(PLY_MODE_SHUTDOWN)");
+            if(!ply_quit(PLY_MODE_SHUTDOWN))
+                rv = 1;
+        }
         break;
 
     case RC_HOOK_SERVICE_STOP_NOW:
-        retval |= ply_text("Stopping service", name);
+        if(!ply_message("Stopping service", name))
+            rv = 1;
         break;
 
-    case RC_HOOK_SERVICE_STOP_DONE:
-        retval |= ply_update("SERVICE_STOP_DONE", name);
+    case RC_HOOK_SERVICE_START_NOW:
+        if(!ply_message("Starting service", name))
+            rv = 1;
         break;
 
-    case RC_HOOK_ABORT:
-        break;
+    case RC_HOOK_SERVICE_START_OUT:
+        /* Start Plymouth daemon if not yet started and tell we have rw access
+         * to /var/... */
+        if(strcmp(name, "localmount") == 0 &&
+                strcmp(runlevel, RC_LEVEL_SHUTDOWN) != 0) {
+            DBG("ply_update_rootfs_rw()");
+            if(!ply_update_rootfs_rw())
+                rv = 1;
+        }
+	    break;
 
     default:
         break;
     }
 
-exit:    
-#ifdef DEBUG
-    fwrite("\n", 1, 1, dbg);
-    fclose(dbg);
-#endif
+exit:
     free(runlevel);
-    return retval;
+    return rv;
 }
