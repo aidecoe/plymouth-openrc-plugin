@@ -2,7 +2,6 @@ PLUGIN_NAME  := plymouth
 PLUGINS_PATH := $(DESTDIR)/lib/rc/plugins
 
 CFLAGS 	     += -fPIC -Wall
-CPPFLAGS     += -DDEBUG
 LDLIBS       := -leinfo -lrc
 LDFLAGS      += -fPIC -shared
 
