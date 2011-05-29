@@ -105,7 +105,7 @@ bool ply_start(int mode)
     int rv = 0;
 
     if(!ply_ping()) {
-        ebegin("Starting plymouthd ...");
+        ebegin("Starting plymouthd");
 #define PLYD "/sbin/plymouthd --attach-to-session --pid-file=/run/plymouth/pid --mode="
         if(mode == PLY_MODE_BOOT)
             rv = command(PLYD "boot");
@@ -114,7 +114,7 @@ bool ply_start(int mode)
         else
             assert(0 && "Unknown mode");
 #undef PLYD
-        eend(rv, "plymouthd?");
+        eend(rv, "");
 
         if((rv == 0) && command("/bin/plymouth --show-splash") != 0)
             return false;
