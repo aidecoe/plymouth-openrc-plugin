@@ -152,8 +152,10 @@ int rc_plugin_hook(RC_HOOK hook, const char *name)
     const char* bootlevel = getenv("RC_BOOTLEVEL");
     const char* defaultlevel = getenv("RC_DEFAULTLEVEL");
 
+#ifdef DEBUG
     einfo("hook=%d name=%s runlvl=%s plyd=%d", hook, name, runlevel,
             ply_ping());
+#endif
 
     /* Don't do anything if we're not booting or shutting down. */
     if(!(rc_runlevel_starting() || rc_runlevel_stopping())) {
