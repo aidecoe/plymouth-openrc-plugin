@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 
 #ifdef DEBUG
@@ -33,6 +34,15 @@
 #endif
 
 #define BUFFER_SIZE 300
+#define RWDIR (R_OK | W_OK | X_OK)
+
+#ifndef RUN_DIR
+#define RUN_DIR "/run/plymouth"
+#endif
+
+#ifndef PID_FILE
+#define PID_FILE RUN_DIR "/pid"
+#endif
 
 
 enum {
@@ -106,7 +116,16 @@ bool ply_start(int mode)
 
     if(!ply_ping()) {
         ebegin("Starting plymouthd");
-#define PLYD "/sbin/plymouthd --attach-to-session --pid-file=/run/plymouth/pid --mode="
+
+        if(access(RUN_DIR, RWDIR) != 0) {
+            if(mkdir(RUN_DIR, 0755) != 0) {
+                eerror("[plymouth-plugin] Couldn't create " RUN_DIR);
+                return false;
+            }
+        }
+
+#define PLYD "/sbin/plymouthd --attach-to-session --pid-file=" PID_FILE \
+    " --mode="
         if(mode == PLY_MODE_BOOT)
             rv = command(PLYD "boot");
         else if(mode == PLY_MODE_SHUTDOWN)
@@ -132,10 +151,10 @@ bool ply_update_status(int hook, const char* name)
 
 bool ply_update_rootfs_rw()
 {
-    const int RWDIR = R_OK | W_OK | X_OK;
+    const int rwdir = RWDIR;
 
-    if(access("/var/lib/plymouth", RWDIR) != 0
-            || access("/var/log", RWDIR) != 0) {
+    if(access("/var/lib/plymouth", rwdir) != 0
+            || access("/var/log", rwdir) != 0) {
         eerror("[plymouth-plugin] /var/lib/plymouth and /var/log need to be "
                 "writable at this stage, but are not!");
         return false;
