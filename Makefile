@@ -42,4 +42,4 @@ $(PKG).tar: .git
 archive: $(PKG).tar.bz2
 
 upload: $(PKG).tar.bz2
-	scp $< dev.gentoo.org:~/public_html/distfiles/sys-boot/$(PLUGIN_NAME)/
+	scp $< dev.gentoo.org:~/public_html/distfiles/sys-boot/$(PKG_NAME)/
