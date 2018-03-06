@@ -240,7 +240,7 @@ int rc_plugin_hook(RC_HOOK hook, const char *name)
 
     case RC_HOOK_SERVICE_STOP_IN:
         /* Quit Plymouth when we're going to lost write access to /var/... */
-        if(strcmp(name, "localmount") == 0 &&
+        if(strcmp(name, "mount-ro") == 0 &&
                 strcmp(runlevel, RC_LEVEL_SHUTDOWN) == 0) {
             DBG("ply_quit(PLY_MODE_SHUTDOWN)");
             if(!ply_quit(PLY_MODE_SHUTDOWN))
